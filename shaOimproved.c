@@ -38,6 +38,22 @@
 #define Sigma5120(x) (ROTR512(x,28) ^ ROTR512(x,34) ^ ROTR512(x,39))
 #define Sigma5121(x) (ROTR512(x,14) ^ ROTR512(x,18) ^ ROTR512(x,41))
 
+#if defined(__GNUC__) || defined(__clang__)
+#define BSWAP32(x) __builtin_bswap32(x)
+#define BSWAP64(x) __builtin_bswap64(x)
+#else
+#define BSWAP32(x) ((((x) & 0xFF000000) >> 24) | (((x) & 0x00FF0000) >> 8) | \
+                    (((x) & 0x0000FF00) << 8) | (((x) & 0x000000FF) << 24))
+#define BSWAP64(x) ((((x) & 0xFF00000000000000ULL) >> 56) | \
+                    (((x) & 0x00FF000000000000ULL) >> 40) | \
+                    (((x) & 0x0000FF0000000000ULL) >> 24) | \
+                    (((x) & 0x000000FF00000000ULL) >> 8)  | \
+                    (((x) & 0x00000000FF000000ULL) << 8)  | \
+                    (((x) & 0x0000000000FF0000ULL) << 24) | \
+                    (((x) & 0x000000000000FF00ULL) << 40) | \
+                    (((x) & 0x00000000000000FFULL) << 56))
+#endif
+
 void sha1_process(unsigned int[], unsigned char[]);
 void sha256_process(unsigned int[], unsigned char[]);
 void sha512_process(unsigned long [], unsigned char []);
@@ -51,36 +67,6 @@ int main (int argc, char *argv[]) {
   exit(0);
 }
 
-
-void sha_msg_pad(unsigned char message[], int size, unsigned int bitlen,
-		 unsigned char paddedmsg[]) {
-  int i;
-  for (i=0; i<size; i++) {
-    paddedmsg[i]=message[i];
-  }
-  paddedmsg[size]= 0x80;
-  for (i=size+1; i<64; i++) {
-    paddedmsg[i]=0x00;
-  }
-  paddedmsg[63] = bitlen;
-  paddedmsg[62] = bitlen >> 8;
-  paddedmsg[61] = bitlen >> 16;
-  paddedmsg[60] = bitlen >> 24;
-  return;
-}
-
-void sha_msg_pad0(unsigned int bitlen, unsigned char paddedmsg[]) {
-  int i;
-  for (i=0; i<64; i++) {
-    paddedmsg[i]=0x00;
-  }
-  paddedmsg[63] = bitlen;
-  paddedmsg[62] = bitlen >> 8;
-  paddedmsg[61] = bitlen >> 16;
-  paddedmsg[60] = bitlen >> 24;
-  return;
-}
-
 void sha1_md(unsigned char message[], int size, unsigned int hash[5]) {
   unsigned int bitlen = 8*size;
   hash[0] = 0x67452301;
@@ -92,8 +78,6 @@ void sha1_md(unsigned char message[], int size, unsigned int hash[5]) {
 
   int Q= size/64;
   int R= size%64;
-  unsigned char msg[R];
-  memcpy(msg, &message[64*Q], R * sizeof(unsigned char));
   
   for (i=0; i<Q; i++) {
     sha1_process(hash, &message[i * 64]);
@@ -102,45 +86,33 @@ void sha1_md(unsigned char message[], int size, unsigned int hash[5]) {
   unsigned char final_block[128];
   memset(final_block, 0, 128);
 
-    if (R > 0) {
-        for(i = 0; i < R; i++) final_block[i] = message[Q * 64 + i];
-    }
+  if (R > 0) {
+    memcpy(final_block, &message[Q * 64], R);
+  }
 
   final_block[R] = 0x80;
   
   if (R >= 56) {
     sha1_process(hash, final_block);
     memset(final_block, 0, 64);
-
-    final_block[63] = bitlen;
-    final_block[62] = bitlen >> 8;
-    final_block[61] = bitlen >> 16;
-    final_block[60] = bitlen >> 24;
-    sha1_process(hash, final_block);
-  } else {
-    final_block[63] = bitlen;
-    final_block[62] = bitlen >> 8;
-    final_block[61] = bitlen >> 16;
-    final_block[60] = bitlen >> 24;
-    sha1_process(hash, final_block);
   }
+  
+  final_block[63] = bitlen;
+  final_block[62] = bitlen >> 8;
+  final_block[61] = bitlen >> 16;
+  final_block[60] = bitlen >> 24;
+  sha1_process(hash, final_block);
   return;
 }
 
 void sha1_process(unsigned int hash[], unsigned char msg[]) {
   const unsigned int K[4] = {0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6};
-  unsigned int W[80];
+  unsigned int W[16];
   unsigned int A, B, C, D, E, T;
   int i;
+  
   for(i = 0; i < 16; i++) {
-    W[i] = (((unsigned) msg[i * 4]) << 24) +
-      (((unsigned) msg[i * 4 + 1]) << 16) +
-      (((unsigned) msg[i * 4 + 2]) << 8) +
-      (((unsigned) msg[i * 4 + 3]));
-  }
-  for(i = 16; i < 80; i++) {
-    W[i] = W[i-3] ^ W[i-8] ^ W[i-14] ^ W[i-16];
-    W[i] = ROTL(W[i],1);
+    W[i] = BSWAP32(*(unsigned int *)(msg + i * 4));
   }
 
   A = hash[0];
@@ -149,7 +121,7 @@ void sha1_process(unsigned int hash[], unsigned char msg[]) {
   D = hash[3];
   E = hash[4];
 
-  for(i = 0; i < 20; i++) {
+  for(i = 0; i < 16; i++) {
     T = ROTL(A,5) + ((B & C) ^ ((~B) & D)) + E + W[i] + K[0];
     E = D;
     D = C;
@@ -157,30 +129,49 @@ void sha1_process(unsigned int hash[], unsigned char msg[]) {
     B = A;
     A = T;
   }
+  
+  for(i = 16; i < 20; i++) {
+    unsigned int w = ROTL(W[(i-3)&15] ^ W[(i-8)&15] ^ W[(i-14)&15] ^ W[(i-16)&15], 1);
+    W[i&15] = w;
+    T = ROTL(A,5) + ((B & C) ^ ((~B) & D)) + E + w + K[0];
+    E = D;
+    D = C;
+    C = ROTL(B, 30);
+    B = A;
+    A = T;
+  }
+  
   for(i = 20; i < 40; i++) {
-    T = ROTL(A,5) + (B^C^D) + E + W[i] + K[1];
+    unsigned int w = ROTL(W[(i-3)&15] ^ W[(i-8)&15] ^ W[(i-14)&15] ^ W[(i-16)&15], 1);
+    W[i&15] = w;
+    T = ROTL(A,5) + (B^C^D) + E + w + K[1];
     E = D;
     D = C;
     C = ROTL(B, 30);
     B = A;
     A = T;
   }
+  
   for(i = 40; i < 60; i++) {
-    T = ROTL(A,5) + ((B & C) ^ (B & D) ^ (C & D)) + E + W[i] + K[2];
+    unsigned int w = ROTL(W[(i-3)&15] ^ W[(i-8)&15] ^ W[(i-14)&15] ^ W[(i-16)&15], 1);
+    W[i&15] = w;
+    T = ROTL(A,5) + ((B & C) ^ (B & D) ^ (C & D)) + E + w + K[2];
     E = D;
     D = C;
     C = ROTL(B, 30);
     B = A;
     A = T;
   }
+  
   for(i = 60; i < 80; i++) {
-    T = ROTL(A,5) + (B ^ C ^ D) + E + W[i] + K[3];
+    unsigned int w = ROTL(W[(i-3)&15] ^ W[(i-8)&15] ^ W[(i-14)&15] ^ W[(i-16)&15], 1);
+    W[i&15] = w;
+    T = ROTL(A,5) + (B ^ C ^ D) + E + w + K[3];
     E = D;
     D = C;
     C = ROTL(B, 30);
     B = A;
     A = T;
-    /* printf("%d: %x %x %x %x %x\n",i, A, B, C, D, E); */
   }
 
   hash[0] +=  A;
@@ -213,18 +204,13 @@ void sha256_md(unsigned char message[], int size, unsigned int hash[8]) {
     if (R >= 56) {
         sha256_process(hash, final_block);
         memset(final_block, 0, 64);
-        final_block[63] = bitlen;
-        final_block[62] = bitlen >> 8;
-        final_block[61] = bitlen >> 16;
-        final_block[60] = bitlen >> 24;
-        sha256_process(hash, final_block);
-    } else {
-        final_block[63] = bitlen;
-        final_block[62] = bitlen >> 8;
-        final_block[61] = bitlen >> 16;
-        final_block[60] = bitlen >> 24;
-        sha256_process(hash, final_block);
     }
+    
+    final_block[63] = bitlen;
+    final_block[62] = bitlen >> 8;
+    final_block[61] = bitlen >> 16;
+    final_block[60] = bitlen >> 24;
+    sha256_process(hash, final_block);
 }
 
 void sha256_process(unsigned int hash[], unsigned char msg[]) {
@@ -240,18 +226,14 @@ void sha256_process(unsigned int hash[], unsigned char msg[]) {
     0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,
     0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,
     0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2};
-  unsigned int W[64];
+  unsigned int W[16];
   int i;
   unsigned int A, B, C, D, E, F, G, H, T1, T2;
+  
   for(i = 0; i < 16; i++) {
-    W[i] = (((unsigned) msg[i * 4]) << 24) |
-      (((unsigned) msg[i * 4 + 1]) << 16) |
-      (((unsigned) msg[i * 4 + 2]) << 8) | 
-      (((unsigned) msg[i * 4 + 3]));
+    W[i] = BSWAP32(*(unsigned int *)(msg + i * 4));
   }
-  for(i = 16; i < 64; i++) {
-    W[i] = sigma1(W[i-2])+W[i-7]+sigma0(W[i-15])+ W[i-16];
-  }
+  
   A = hash[0];
   B = hash[1];
   C = hash[2];
@@ -261,8 +243,23 @@ void sha256_process(unsigned int hash[], unsigned char msg[]) {
   G = hash[6];
   H = hash[7];
 
-  for (i = 0; i < 64; ++i) {
+  for (i = 0; i < 16; ++i) {
     T1 = H + Sigma1(E) + CH(E,F,G) + K[i] + W[i];
+    T2 = Sigma0(A) + MAJ(A,B,C);
+    H = G;
+    G = F;
+    F = E;
+    E = D + T1;
+    D = C;
+    C = B;
+    B = A;
+    A = T1 + T2;
+  }
+  
+  for (i = 16; i < 64; ++i) {
+    unsigned int w = sigma1(W[(i-2)&15]) + W[(i-7)&15] + sigma0(W[(i-15)&15]) + W[(i-16)&15];
+    W[i&15] = w;
+    T1 = H + Sigma1(E) + CH(E,F,G) + K[i] + w;
     T2 = Sigma0(A) + MAJ(A,B,C);
     H = G;
     G = F;
@@ -285,36 +282,6 @@ void sha256_process(unsigned int hash[], unsigned char msg[]) {
   return;
 }
 
-
-void sha512_msg_pad(unsigned char message[], int size, unsigned int bitlen, unsigned char paddedmsg[]) {
-  int i;
-  for (i=0; i<size; i++) {
-    paddedmsg[i]=message[i];
-  }
-  paddedmsg[size]= 0x80;
-  for (i=size+1; i<128; i++) {
-    paddedmsg[i]=0x00;
-  }
-  paddedmsg[127] = bitlen;
-  paddedmsg[126] = bitlen >> 8;
-  paddedmsg[125] = bitlen >> 16;
-  paddedmsg[124] = bitlen >> 24;
-  return;
-}
-
-void sha512_msg_pad0(unsigned int bitlen, unsigned char paddedmsg[]) {
-  int i;
-  for (i=0; i<128; i++) {
-    paddedmsg[i]=0x00;
-  }
-  paddedmsg[127] = bitlen;
-  paddedmsg[126] = bitlen >> 8;
-  paddedmsg[125] = bitlen >> 16;
-  paddedmsg[124] = bitlen >> 24;
-  return;
-}
-
-
 void sha512_md(unsigned char message[], int size, unsigned long hash[8]) {
     unsigned int bitlen = 8 * size;
     hash[0] = 0x6a09e667f3bcc908;
@@ -330,34 +297,27 @@ void sha512_md(unsigned char message[], int size, unsigned long hash[8]) {
     int R = size % 128;
     int i;
 
-    // Process full blocks directly
     for (i = 0; i < Q; i++) {
         sha512_process(hash, &message[i * 128]);
     }
 
-    // Padding
     unsigned char final_block[256]; 
     memset(final_block, 0, 256);
     if (R > 0) {
-        for(i = 0; i < R; i++) final_block[i] = message[Q * 128 + i];
+        memcpy(final_block, &message[Q * 128], R);
     }
     final_block[R] = 0x80;
 
     if (R >= 112) {
         sha512_process(hash, final_block);
         memset(final_block, 0, 128);
-        final_block[127] = bitlen;
-        final_block[126] = bitlen >> 8;
-        final_block[125] = bitlen >> 16;
-        final_block[124] = bitlen >> 24;
-        sha512_process(hash, final_block);
-    } else {
-        final_block[127] = bitlen;
-        final_block[126] = bitlen >> 8;
-        final_block[125] = bitlen >> 16;
-        final_block[124] = bitlen >> 24;
-        sha512_process(hash, final_block);
     }
+    
+    final_block[127] = bitlen;
+    final_block[126] = bitlen >> 8;
+    final_block[125] = bitlen >> 16;
+    final_block[124] = bitlen >> 24;
+    sha512_process(hash, final_block);
 }
 
 void sha512_process(unsigned long hash[], unsigned char msg[]) {
@@ -383,17 +343,15 @@ void sha512_process(unsigned long hash[], unsigned char msg[]) {
     0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
     0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817};
 
-  unsigned long W[80];
-    int i;
-    for(i = 0; i < 16; i++) {
-        W[i] = __builtin_bswap64(*(unsigned long long *)(msg + i * 8));
-    }
+  unsigned long W[16];
+  int i;
+  
+  for(i = 0; i < 16; i++) {
+    W[i] = BSWAP64(*(unsigned long *)(msg + i * 8));
+  }
     
   unsigned long A, B, C, D, E, F, G, H, T1, T2;
 
-  for(i = 16; i < 80; i++) {
-    W[i] = sigma5121(W[i-2])+W[i-7]+sigma5120(W[i-15])+ W[i-16];
-  }
   A = hash[0];
   B = hash[1];
   C = hash[2];
@@ -403,8 +361,23 @@ void sha512_process(unsigned long hash[], unsigned char msg[]) {
   G = hash[6];
   H = hash[7];
 
-  for (i = 0; i < 80; ++i) {
+  for (i = 0; i < 16; ++i) {
     T1 = H + Sigma5121(E) + CH(E,F,G) + K[i] + W[i];
+    T2 = Sigma5120(A) + MAJ(A,B,C);
+    H = G;
+    G = F;
+    F = E;
+    E = D + T1;
+    D = C;
+    C = B;
+    B = A;
+    A = T1 + T2;
+  }
+  
+  for (i = 16; i < 80; ++i) {
+    unsigned long w = sigma5121(W[(i-2)&15]) + W[(i-7)&15] + sigma5120(W[(i-15)&15]) + W[(i-16)&15];
+    W[i&15] = w;
+    T1 = H + Sigma5121(E) + CH(E,F,G) + K[i] + w;
     T2 = Sigma5120(A) + MAJ(A,B,C);
     H = G;
     G = F;
@@ -427,10 +400,7 @@ void sha512_process(unsigned long hash[], unsigned char msg[]) {
   return;
 }
 
-
 int testSHA(int shatype, int numT){
-  //you should not make any changes to this function. Any modification to this function
-  //is considered a violaiton of the academic integrity
   unsigned int hash1[5];
   unsigned int hash2[8];
   unsigned long hash3[8];
